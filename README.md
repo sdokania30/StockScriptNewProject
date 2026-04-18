@@ -1,36 +1,77 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# StockScript Journal
 
-## Getting Started
+Authenticated trading journal with trader accounts, admin approval, manual-price journals, image uploads, competitions, and a percentage-only leaderboard.
 
-First, run the development server:
+## What changed
+
+- Each trader now owns a personal account with email ID and password
+- Registration creates a trader account in pending state
+- Email verification is required before admin approval
+- Admin approval is required before a trader can enter trades
+- One seeded admin account is available for validation workflows
+- Trades can be `OPEN` without exit price or exit time
+- `closing price` is now the manual end-of-day engine price for journal mark-to-market
+- The journal screen follows a denser gold-header layout inspired by the supplied reference
+- Leaderboard ranking remains percentage-only and uses closed trades only
+
+## Local setup
+
+1. Install dependencies
+
+```bash
+npm install
+```
+
+2. Initialize the SQLite database
+
+```bash
+npm run db:init
+```
+
+3. Seed demo accounts, trades, and competition data
+
+```bash
+npm run db:seed
+```
+
+4. Start the app
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Seeded credentials
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- Admin:
+  - Email: `admin@stockscript.dev`
+  - Password: `Admin@12345`
+- Approved traders:
+  - `aarav@stockscript.dev`
+  - `mira@stockscript.dev`
+  - `kabir@stockscript.dev`
+  - Password for all seeded traders: `Trader@123`
+- One additional trader is seeded in pending approval state:
+  - `riya@stockscript.dev`
+  - Password: `Trader@123`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Pricing rules
 
-## Learn More
+- Closed trades use `exit_price` for realized P&L
+- Open trades do not contribute realized P&L
+- `closing_price` is the manual end-of-day journal price
+- Open-trade mark-to-market uses `closing_price`
+- Leaderboard uses only closed trades inside competition dates
 
-To learn more about Next.js, take a look at the following resources:
+## Leaderboard formula
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Portfolio Return % = `(Total Net Realized P&L / Max Capital Deployed) * 100`
+- Sort order:
+  - Highest return %
+  - Lowest drawdown
+  - Highest win rate
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Storage
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- SQLite for local data
+- Local upload fallback in `public/uploads`
+- Optional S3-compatible upload support via `.env`

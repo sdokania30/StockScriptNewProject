@@ -1,0 +1,167 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                      String                   @id @default(cuid())
+  name                    String
+  email                   String                   @unique
+  passwordHash            String
+  role                    String                   @default("TRADER")
+  emailVerifiedAt         DateTime?
+  approvalStatus          String                   @default("PENDING")
+  approvedAt              DateTime?
+  approvedBy              String?
+  isActive                Boolean                  @default(false)
+  portfolioCapital        Float                    @default(100000)
+  trades                  Trade[]
+  competitionsCreated     Competition[]            @relation("CompetitionsCreated")
+  competitionParticipants CompetitionParticipant[]
+  competitionStats        UserCompetitionStat[]
+  sessions                Session[]
+  verificationTokens      EmailVerificationToken[]
+  approvalsGiven          User[]                   @relation("UserApprovals")
+  approver                User?                    @relation("UserApprovals", fields: [approvedBy], references: [id], onDelete: SetNull)
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+
+  @@index([role, approvalStatus, isActive])
+}
+
+model Trade {
+  id            String      @id @default(cuid())
+  userId        String
+  competitionId String?
+  symbol        String
+  segment       String
+  tradeType     String
+  entryPrice1   Float
+  entryQty1     Float
+  entryTime1    DateTime
+  
+  entryPrice2   Float?
+  entryQty2     Float?
+  entryTime2    DateTime?
+
+  entryPrice3   Float?
+  entryQty3     Float?
+  entryTime3    DateTime?
+
+  exitPrice1    Float?
+  exitQty1      Float?
+  exitTime1     DateTime?
+
+  exitPrice2    Float?
+  exitQty2      Float?
+  exitTime2     DateTime?
+
+  exitPrice3    Float?
+  exitQty3      Float?
+  exitTime3     DateTime?
+
+  closingPrice  Float?
+  stopLoss      Float?
+  charges       Float      @default(0)
+  capitalUsed   Float      @default(0)
+  netPnl        Float      @default(0)
+  rowIndex      Int         @default(0)
+  status        String      @default("OPEN")
+  tags          String      @default("")
+  notes         String      @default("")
+  lockedAt      DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  competition   Competition? @relation(fields: [competitionId], references: [id], onDelete: SetNull)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  images        TradeImage[]
+
+  @@index([userId, status, updatedAt])
+  @@index([competitionId, status, updatedAt])
+  @@index([symbol, userId])
+}
+
+model TradeImage {
+  id         String   @id @default(cuid())
+  tradeId     String
+  imageUrl    String
+  uploadedAt  DateTime @default(now())
+  trade       Trade    @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+
+  @@index([tradeId])
+}
+
+model Competition {
+  id            String                   @id @default(cuid())
+  name          String
+  startDate     DateTime
+  endDate       DateTime
+  visibility    String
+  createdBy     String
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+  creator       User                     @relation("CompetitionsCreated", fields: [createdBy], references: [id], onDelete: Cascade)
+  participants  CompetitionParticipant[]
+  trades        Trade[]
+  stats         UserCompetitionStat[]
+
+  @@index([startDate, endDate])
+}
+
+model CompetitionParticipant {
+  id             String       @id @default(cuid())
+  competitionId  String
+  userId         String
+  joinedAt       DateTime     @default(now())
+  competition    Competition  @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([competitionId, userId])
+  @@index([competitionId])
+}
+
+model UserCompetitionStat {
+  userId              String
+  competitionId       String
+  totalNetPnl         Float    @default(0)
+  maxCapitalDeployed  Float    @default(0)
+  returnPercentage    Float    @default(0)
+  maxDrawdown         Float    @default(0)
+  winRate             Float    @default(0)
+  totalTrades         Int      @default(0)
+  profitFactor        Float    @default(0)
+  updatedAt           DateTime @updatedAt
+  competition         Competition @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, competitionId])
+  @@index([competitionId, returnPercentage, maxDrawdown, winRate])
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  token       String   @unique
+  userId      String
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model EmailVerificationToken {
+  id          String   @id @default(cuid())
+  token       String   @unique
+  userId      String
+  email       String
+  expiresAt   DateTime
+  verifiedAt  DateTime?
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, email, expiresAt])
+}
