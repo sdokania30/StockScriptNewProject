@@ -6,16 +6,12 @@ import ws from "ws";
 const isProduction = process.env.NODE_ENV === "production";
 
 function createPrismaClient() {
-  if (isProduction) {
-    neonConfig.webSocketConstructor = ws;
-    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-    const adapter = new PrismaNeon(pool);
-    return new PrismaClient({ adapter, log: ["error"] });
-  }
-
+  neonConfig.webSocketConstructor = ws;
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const adapter = new PrismaNeon(pool);
   return new PrismaClient({
-    log: ["error", "warn"],
-    datasourceUrl: process.env.DATABASE_URL,
+    adapter,
+    log: isProduction ? ["error"] : ["error", "warn"],
   });
 }
 
