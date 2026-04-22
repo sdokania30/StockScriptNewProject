@@ -2,12 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { requireActiveUser } from "@/lib/auth";
-import {
-  formatCurrency,
-  formatDateTime,
-  formatNumber,
-  formatPercent,
-} from "@/lib/format";
+import { format } from "date-fns";
+import { formatPercent } from "@/lib/format";
 import { getTraderCompetitionTrades } from "@/lib/queries";
 import {
   getWeightedEntryPrice,
@@ -17,76 +13,72 @@ import {
   getLastExitTime,
   buildDashboardMetrics,
 } from "@/lib/trade-utils";
-import { MetricCard } from "@/components/metric-card";
 
-type TraderDrillDownProps = {
-  params: {
-    competitionId: string;
-    userId: string;
-  };
-};
+const fmtDate = (d: Date | null | undefined) =>
+  d ? format(new Date(d), "dd MMM yy") : "—";
 
-export default async function TraderDrillDownPage({ params }: TraderDrillDownProps) {
+type Props = { params: { competitionId: string; userId: string } };
+
+export default async function TraderDrillDownPage({ params }: Props) {
   await requireActiveUser();
   const data = await getTraderCompetitionTrades(params.competitionId, params.userId);
-
-  if (!data) {
-    notFound();
-  }
+  if (!data) notFound();
 
   const { competition, user: trader, trades } = data;
+  const portfolioCapital = trader.portfolioCapital ?? 100000;
   const metrics = buildDashboardMetrics(trades);
 
+  // Portfolio-level totals
+  const totalPnlPct = metrics.returnOnCapital; // totalNetPnl / maxCapitalDeployed * 100
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      {/* Header */}
       <section className="rounded-[36px] border border-white/70 bg-[linear-gradient(135deg,rgba(15,23,32,0.96),rgba(49,91,74,0.88))] p-7 text-white shadow-soft">
-        <Link
-          href={`/leaderboard?competitionId=${competition.id}`}
-          className="inline-flex items-center gap-2 text-sm text-white/65 hover:text-white/90 transition"
-        >
+        <Link href={`/leaderboard?competitionId=${competition.id}`}
+          className="inline-flex items-center gap-2 text-sm text-white/60 hover:text-white/90 transition">
           <ArrowLeft className="h-4 w-4" />
           Back to leaderboard
         </Link>
         <h1 className="mt-4 font-display text-4xl font-semibold">{trader.name}</h1>
-        <p className="mt-2 text-base text-white/70">
+        <p className="mt-2 text-base text-white/65">
           Competition: <span className="font-medium text-white/90">{competition.name}</span>
         </p>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-4">
-        <MetricCard label="Closed Trades" value={String(metrics.totalTrades)} />
-        <MetricCard
-          label="Win Rate"
-          value={formatPercent(metrics.winRate)}
-          tone="profit"
-        />
-        <MetricCard
-          label="Net P&L"
-          value={formatCurrency(metrics.totalNetPnl)}
-          tone={metrics.totalNetPnl >= 0 ? "profit" : "loss"}
-        />
-        <MetricCard
-          label="ROI %"
-          value={formatPercent(metrics.returnOnCapital)}
-          tone={metrics.returnOnCapital >= 0 ? "profit" : "loss"}
-        />
+      {/* Portfolio summary — % only, no ₹ */}
+      <section className="grid gap-4 sm:grid-cols-4">
+        {[
+          { label: "Closed Trades", value: String(metrics.totalTrades) },
+          { label: "Win Rate", value: formatPercent(metrics.winRate), positive: metrics.winRate > 50 },
+          { label: "Portfolio Return %", value: formatPercent(totalPnlPct), positive: totalPnlPct >= 0 },
+          { label: "Profit Factor", value: metrics.profitFactor.toFixed(2), positive: metrics.profitFactor >= 1 },
+        ].map((card) => (
+          <div key={card.label} className="rounded-[20px] border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="text-xs uppercase tracking-wider text-slate-500">{card.label}</p>
+            <p className={`mt-2 text-2xl font-bold ${
+              card.positive === undefined ? "text-slate-800"
+              : card.positive ? "text-emerald-600" : "text-red-500"
+            }`}>
+              {card.value}
+            </p>
+          </div>
+        ))}
       </section>
 
+      {/* Trade table — no ₹ amounts */}
       <section className="overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm">
         <div className="overflow-x-auto">
-          <table className="w-full whitespace-nowrap text-center text-[13px] font-medium text-slate-700">
+          <table className="w-full whitespace-nowrap text-[12px]">
             <thead>
-              <tr className="bg-gradient-to-r from-[#d4a849] via-[#c99a38] to-[#b18123] text-white">
-                <th className="px-4 py-3 font-semibold text-left">Ticker</th>
-                <th className="px-4 py-3 font-semibold">Type</th>
-                <th className="px-4 py-3 font-semibold">Segment</th>
-                <th className="px-4 py-3 font-semibold">Entry Price</th>
-                <th className="px-4 py-3 font-semibold">Exit Price</th>
-                <th className="px-4 py-3 font-semibold">Qty</th>
-                <th className="px-4 py-3 font-semibold">Entry Date</th>
-                <th className="px-4 py-3 font-semibold">Exit Date</th>
-                <th className="px-4 py-3 font-semibold">P&L %</th>
-                <th className="px-4 py-3 font-semibold">Net P&L</th>
+              <tr className="bg-slate-900 text-white text-[10px] uppercase tracking-wider">
+                <th className="px-4 py-3 text-left">Symbol</th>
+                <th className="px-4 py-3 text-center">L/S</th>
+                <th className="px-4 py-3 text-center">Segment</th>
+                <th className="px-4 py-3 text-right">Entry Date</th>
+                <th className="px-4 py-3 text-right">Exit Date</th>
+                <th className="px-4 py-3 text-right border-l border-slate-700">Trade P&amp;L %</th>
+                <th className="px-4 py-3 text-right">Portfolio Impact %</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -95,69 +87,51 @@ export default async function TraderDrillDownPage({ params }: TraderDrillDownPro
                 const exitP = getWeightedExitPrice(trade);
                 const qty = getTotalEntryQty(trade);
                 const capital = trade.capitalUsed || entryP * qty;
-                const pnlPct = capital > 0 ? (trade.netPnl / capital) * 100 : 0;
+                const tradePnlPct = capital > 0 ? (trade.netPnl / capital) * 100 : 0;
+                const portfolioImpactPct = portfolioCapital > 0
+                  ? (trade.netPnl / portfolioCapital) * 100 : 0;
+                const pnlColor = trade.netPnl > 0 ? "text-emerald-600" : trade.netPnl < 0 ? "text-red-500" : "text-slate-400";
 
                 return (
-                  <tr key={trade.id} className="hover:bg-[#faf7f0] transition-colors">
-                    <td className="px-4 py-3 text-left font-semibold text-slate-800 uppercase">
+                  <tr key={trade.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-4 py-3 font-semibold text-slate-800 uppercase text-[13px]">
                       {trade.symbol}
                     </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                          trade.tradeType === "LONG"
-                            ? "bg-emerald-50 text-emerald-600"
-                            : "bg-red-50 text-red-500"
-                        }`}
-                      >
-                        {trade.tradeType}
+                    <td className="px-4 py-3 text-center">
+                      <span className={`inline-block rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                        trade.tradeType === "LONG"
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-red-100 text-red-600"
+                      }`}>
+                        {trade.tradeType === "LONG" ? "L" : "S"}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-slate-500 uppercase text-[11px] tracking-wider">
+                    <td className="px-4 py-3 text-center text-slate-500 uppercase text-[10px] tracking-wider">
                       {trade.segment}
                     </td>
-                    <td className="px-4 py-3">₹{formatNumber(entryP)}</td>
-                    <td className="px-4 py-3">
-                      {exitP > 0 ? `₹${formatNumber(exitP)}` : "—"}
+                    <td className="px-4 py-3 text-right text-slate-500">
+                      {fmtDate(getFirstEntryTime(trade))}
                     </td>
-                    <td className="px-4 py-3 text-slate-600">{formatNumber(qty)}</td>
-                    <td className="px-4 py-3 text-slate-500 text-xs">
-                      {formatDateTime(getFirstEntryTime(trade))}
+                    <td className="px-4 py-3 text-right text-slate-500">
+                      {fmtDate(getLastExitTime(trade))}
                     </td>
-                    <td className="px-4 py-3 text-slate-500 text-xs">
-                      {getLastExitTime(trade)
-                        ? formatDateTime(getLastExitTime(trade)!)
+                    <td className={`px-4 py-3 text-right font-semibold border-l border-slate-100 ${pnlColor}`}>
+                      {tradePnlPct !== 0
+                        ? `${tradePnlPct > 0 ? "+" : ""}${tradePnlPct.toFixed(2)}%`
                         : "—"}
                     </td>
-                    <td
-                      className={`px-4 py-3 font-semibold ${
-                        pnlPct > 0
-                          ? "text-emerald-600"
-                          : pnlPct < 0
-                          ? "text-red-500"
-                          : "text-slate-400"
-                      }`}
-                    >
-                      {formatPercent(pnlPct)}
-                    </td>
-                    <td
-                      className={`px-4 py-3 font-semibold ${
-                        trade.netPnl > 0
-                          ? "text-emerald-600"
-                          : trade.netPnl < 0
-                          ? "text-red-500"
-                          : "text-slate-400"
-                      }`}
-                    >
-                      {formatCurrency(trade.netPnl)}
+                    <td className={`px-4 py-3 text-right font-semibold ${pnlColor}`}>
+                      {portfolioImpactPct !== 0
+                        ? `${portfolioImpactPct > 0 ? "+" : ""}${portfolioImpactPct.toFixed(2)}%`
+                        : "—"}
                     </td>
                   </tr>
                 );
               })}
               {trades.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-500">
-                    No qualifying trades found for this trader in this competition.
+                  <td colSpan={7} className="py-12 text-center text-slate-400">
+                    No qualifying trades in this competition window.
                   </td>
                 </tr>
               )}

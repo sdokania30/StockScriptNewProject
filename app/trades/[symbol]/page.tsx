@@ -11,7 +11,7 @@ import {
   formatPercent,
 } from "@/lib/format";
 import { getTradesBySymbol } from "@/lib/queries";
-import { getMarkedPrice, parseTags, getWeightedEntryPrice, getWeightedExitPrice, getTotalEntryQty, getFirstEntryTime, getLastExitTime } from "@/lib/trade-utils";
+import { parseTags, getWeightedEntryPrice, getWeightedExitPrice, getTotalEntryQty, getFirstEntryTime, getLastExitTime } from "@/lib/trade-utils";
 
 type TradeDetailPageProps = {
   params: {
@@ -97,7 +97,13 @@ export default async function TradeDetailPage({ params, searchParams }: TradeDet
                   </div>
                   <div className="info-chip">
                     <p className="info-label">Marked Price</p>
-                    <p className="info-value">{formatNumber(getMarkedPrice(trade))}</p>
+                    <p className="info-value">
+                      {trade.closingPrice
+                        ? formatNumber(trade.closingPrice)
+                        : getWeightedExitPrice(trade) > 0
+                        ? formatNumber(getWeightedExitPrice(trade))
+                        : "--"}
+                    </p>
                   </div>
                 </div>
 

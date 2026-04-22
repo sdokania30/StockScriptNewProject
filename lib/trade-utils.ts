@@ -1,4 +1,4 @@
-import { Competition, Trade, User } from "@prisma/client";
+import { Competition, Trade, Transaction, User } from "@prisma/client";
 import { differenceInDays } from "date-fns";
 import { z } from "zod";
 import {
@@ -24,15 +24,17 @@ const isoDateString = z
     message: "Expected a valid date-time string.",
   });
 
-const optionalDateString = z.preprocess((value) => {
-  if (value === "" || value === null || value === undefined) return undefined;
-  return value;
-}, isoDateString.optional());
-
 const optionalNumber = z.preprocess((value) => {
   if (value === "" || value === null || value === undefined) return undefined;
   return value;
 }, z.coerce.number().positive().optional());
+
+export const transactionSchema = z.object({
+  type: z.enum(["BUY", "SELL"]),
+  price: z.coerce.number().positive(),
+  quantity: z.coerce.number().positive(),
+  dateTime: isoDateString,
+});
 
 export const tradePayloadSchema = z
   .object({
@@ -40,34 +42,9 @@ export const tradePayloadSchema = z
     symbol: z.string().trim().min(1).max(40),
     segment: segmentSchema,
     tradeType: tradeTypeSchema,
-
-    entryPrice1: z.coerce.number().positive(),
-    entryQty1: z.coerce.number().positive(),
-    entryTime1: isoDateString,
-
-    entryPrice2: optionalNumber,
-    entryQty2: optionalNumber,
-    entryTime2: optionalDateString,
-
-    entryPrice3: optionalNumber,
-    entryQty3: optionalNumber,
-    entryTime3: optionalDateString,
-
-    exitPrice1: optionalNumber,
-    exitQty1: optionalNumber,
-    exitTime1: optionalDateString,
-
-    exitPrice2: optionalNumber,
-    exitQty2: optionalNumber,
-    exitTime2: optionalDateString,
-
-    exitPrice3: optionalNumber,
-    exitQty3: optionalNumber,
-    exitTime3: optionalDateString,
-
+    transactions: z.array(transactionSchema).min(1, "At least one transaction is required."),
     closingPrice: optionalNumber,
     stopLoss: optionalNumber,
-    capitalUsed: optionalNumber,
     charges: z.coerce.number().min(0).default(0),
     tags: z.union([z.array(z.string()), z.string()]).optional(),
     notes: z.string().max(2000).optional(),
@@ -75,18 +52,13 @@ export const tradePayloadSchema = z
   })
   .superRefine((data, ctx) => {
     if (data.status === "CLOSED") {
-      if (!data.exitPrice1 && !data.exitPrice2 && !data.exitPrice3) {
+      const exitType = data.tradeType === "LONG" ? "SELL" : "BUY";
+      const hasExit = data.transactions.some((t) => t.type === exitType);
+      if (!hasExit) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "At least one Exit price is required for closed trades.",
-          path: ["exitPrice1"],
-        });
-      }
-      if (!data.exitTime1 && !data.exitTime2 && !data.exitTime3) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "At least one Exit time is required for closed trades.",
-          path: ["exitTime1"],
+          message: "At least one exit transaction is required for closed trades.",
+          path: ["transactions"],
         });
       }
     }
@@ -122,49 +94,59 @@ export const loginSchema = z.object({
   password: z.string().min(8).max(128),
 });
 
-// MATH HELPERS
-export function getTotalEntryQty(trade: Partial<Trade>) {
-  return (trade.entryQty1 || 0) + (trade.entryQty2 || 0) + (trade.entryQty3 || 0);
+// ─── Transaction helpers ────────────────────────────────────────────────────
+
+export type TradeTx = Pick<Transaction, "type" | "price" | "quantity" | "dateTime">;
+
+export type TradeWithTxns = Trade & { transactions: TradeTx[] };
+
+export function getEntryTransactions(trade: { tradeType: string; transactions: TradeTx[] }): TradeTx[] {
+  const entryType = trade.tradeType === "LONG" ? "BUY" : "SELL";
+  return trade.transactions
+    .filter((t) => t.type === entryType)
+    .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
 }
 
-export function getTotalExitQty(trade: Partial<Trade>) {
-  return (trade.exitQty1 || 0) + (trade.exitQty2 || 0) + (trade.exitQty3 || 0);
+export function getExitTransactions(trade: { tradeType: string; transactions: TradeTx[] }): TradeTx[] {
+  const exitType = trade.tradeType === "LONG" ? "SELL" : "BUY";
+  return trade.transactions
+    .filter((t) => t.type === exitType)
+    .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
 }
 
-export function getWeightedEntryPrice(trade: Partial<Trade>) {
-  const q1 = trade.entryQty1 || 0;
-  const q2 = trade.entryQty2 || 0;
-  const q3 = trade.entryQty3 || 0;
-  const totalQ = q1 + q2 + q3;
-  if (totalQ === 0) return 0;
-  const w1 = (trade.entryPrice1 || 0) * q1;
-  const w2 = (trade.entryPrice2 || 0) * q2;
-  const w3 = (trade.entryPrice3 || 0) * q3;
-  return (w1 + w2 + w3) / totalQ;
+export function getTotalEntryQty(trade: { tradeType: string; transactions: TradeTx[] }): number {
+  return getEntryTransactions(trade).reduce((sum, t) => sum + t.quantity, 0);
 }
 
-export function getWeightedExitPrice(trade: Partial<Trade>) {
-  const q1 = trade.exitQty1 || 0;
-  const q2 = trade.exitQty2 || 0;
-  const q3 = trade.exitQty3 || 0;
-  const totalQ = q1 + q2 + q3;
-  if (totalQ === 0) return 0;
-  const w1 = (trade.exitPrice1 || 0) * q1;
-  const w2 = (trade.exitPrice2 || 0) * q2;
-  const w3 = (trade.exitPrice3 || 0) * q3;
-  return (w1 + w2 + w3) / totalQ;
+export function getTotalExitQty(trade: { tradeType: string; transactions: TradeTx[] }): number {
+  return getExitTransactions(trade).reduce((sum, t) => sum + t.quantity, 0);
 }
 
-export function getFirstEntryTime(trade: Partial<Trade>): Date {
-  return (trade.entryTime1 as Date) ?? new Date();
+export function getWeightedEntryPrice(trade: { tradeType: string; transactions: TradeTx[] }): number {
+  const entries = getEntryTransactions(trade);
+  const totalQty = entries.reduce((sum, t) => sum + t.quantity, 0);
+  if (totalQty === 0) return 0;
+  return entries.reduce((sum, t) => sum + t.price * t.quantity, 0) / totalQty;
 }
 
-export function getLastExitTime(trade: Partial<Trade>): Date | null {
-  const times = [trade.exitTime3, trade.exitTime2, trade.exitTime1].filter(Boolean);
-  return times.length > 0 ? (times[0] as Date) : null;
+export function getWeightedExitPrice(trade: { tradeType: string; transactions: TradeTx[] }): number {
+  const exits = getExitTransactions(trade);
+  const totalQty = exits.reduce((sum, t) => sum + t.quantity, 0);
+  if (totalQty === 0) return 0;
+  return exits.reduce((sum, t) => sum + t.price * t.quantity, 0) / totalQty;
 }
 
-export type TradeWithRelations = Trade & {
+export function getFirstEntryTime(trade: { tradeType: string; transactions: TradeTx[] }): Date {
+  const entries = getEntryTransactions(trade);
+  return entries.length > 0 ? new Date(entries[0].dateTime) : new Date();
+}
+
+export function getLastExitTime(trade: { tradeType: string; transactions: TradeTx[] }): Date | null {
+  const exits = getExitTransactions(trade);
+  return exits.length > 0 ? new Date(exits[exits.length - 1].dateTime) : null;
+}
+
+export type TradeWithRelations = TradeWithTxns & {
   user: User;
   images: { id: string; imageUrl: string; uploadedAt: Date }[];
   competition: Competition | null;
@@ -180,35 +162,67 @@ export function parseTags(tags: string) {
   return tags.split(",").map((tag) => tag.trim()).filter(Boolean);
 }
 
-export function getRealizedExitPrice(trade: Partial<Trade>) {
-  const avg = getWeightedExitPrice(trade);
-  return avg > 0 ? avg : 0;
-}
-
-export function getMarkedPrice(trade: Partial<Trade>) {
-  if (trade.closingPrice && trade.closingPrice > 0) return trade.closingPrice;
-  return getRealizedExitPrice(trade);
-}
-
-export function calculateOpenPnl(input: {
-  trade: Partial<Trade>;
-  isClosed: boolean;
+export function calculateTradeMetrics(trade: {
+  tradeType: string;
+  status: string;
+  transactions: { type: string; price: number; quantity: number }[];
+  charges?: number | null;
+  capitalUsed?: number | null;
 }) {
-  const entryP = getWeightedEntryPrice(input.trade);
-  const entryQ = getTotalEntryQty(input.trade);
-  
-  const exitP = getWeightedExitPrice(input.trade);
-  const exitQ = getTotalExitQty(input.trade);
-  
-  const markedP = input.isClosed ? getRealizedExitPrice(input.trade) : getMarkedPrice(input.trade);
-  const charges = input.trade.charges || 0;
+  const entryType = trade.tradeType === "LONG" ? "BUY" : "SELL";
+  const exitType = trade.tradeType === "LONG" ? "SELL" : "BUY";
+
+  const entries = trade.transactions.filter((t) => t.type === entryType);
+  const exits = trade.transactions.filter((t) => t.type === exitType);
+
+  const totalEntryQty = entries.reduce((sum, t) => sum + t.quantity, 0);
+  const totalExitQty = exits.reduce((sum, t) => sum + t.quantity, 0);
+
+  const weightedEntry =
+    totalEntryQty > 0
+      ? entries.reduce((sum, t) => sum + t.price * t.quantity, 0) / totalEntryQty
+      : 0;
+  const weightedExit =
+    totalExitQty > 0
+      ? exits.reduce((sum, t) => sum + t.price * t.quantity, 0) / totalExitQty
+      : 0;
+
+  const nominalCapital = Math.abs(weightedEntry * totalEntryQty);
+  const capitalUsed = trade.capitalUsed || nominalCapital;
+  const charges = trade.charges || 0;
+
+  if (trade.status !== "CLOSED") {
+    return { realizedPnl: 0, capitalUsed };
+  }
+
+  const pnlQty = totalExitQty > 0 ? totalExitQty : totalEntryQty;
+  const grossPnl =
+    trade.tradeType === "LONG"
+      ? (weightedExit - weightedEntry) * pnlQty
+      : (weightedEntry - weightedExit) * pnlQty;
+
+  return { realizedPnl: grossPnl - charges, capitalUsed };
+}
+
+export function calculateOpenPnl(trade: TradeWithTxns): number {
+  const entryP = getWeightedEntryPrice(trade);
+  const entryQ = getTotalEntryQty(trade);
+  const exitP = getWeightedExitPrice(trade);
+  const exitQ = getTotalExitQty(trade);
+  const charges = trade.charges || 0;
+
+  const markedP =
+    trade.status === "CLOSED"
+      ? exitP
+      : trade.closingPrice && trade.closingPrice > 0
+      ? trade.closingPrice
+      : exitP;
 
   const remainingQ = Math.max(0, entryQ - exitQ);
-
   let realizedPnl = 0;
   let unrealizedPnl = 0;
 
-  if (input.trade.tradeType === "LONG") {
+  if (trade.tradeType === "LONG") {
     if (exitQ > 0) realizedPnl = (exitP - entryP) * exitQ;
     if (remainingQ > 0 && markedP > 0) unrealizedPnl = (markedP - entryP) * remainingQ;
   } else {
@@ -216,65 +230,28 @@ export function calculateOpenPnl(input: {
     if (remainingQ > 0 && markedP > 0) unrealizedPnl = (entryP - markedP) * remainingQ;
   }
 
-  // If closed, the entire position should be exited, so unrealized is 0 (or markedP is the exitP)
-  // For open trades, it's the sum of what was realized so far + the current marked value of the remainder.
-  const grossPnl = input.isClosed ? realizedPnl : (realizedPnl + unrealizedPnl);
-
-  return grossPnl - charges;
-}
-
-export function calculateTradeMetrics(input: Partial<Trade>) {
-  const entryP = getWeightedEntryPrice(input);
-  const entryQ = getTotalEntryQty(input);
-  const nominalCapital = Math.abs(entryP * entryQ);
-  const capitalUsed = input.capitalUsed || nominalCapital;
-
-  if (input.status !== "CLOSED") {
-    return {
-      realizedPnl: 0,
-      capitalUsed,
-      markedPnl: calculateOpenPnl({ trade: input, isClosed: false }),
-    };
-  }
-
-  const exitP = getWeightedExitPrice(input);
-  const exitQ = getTotalExitQty(input);
-  // Assume exitQ is close enough to entryQ for realized PNL mapping, or fall back to entryQ
-  const pnlQty = exitQ > 0 ? exitQ : entryQ; 
-  const charges = input.charges || 0;
-
-  const grossPnl =
-    input.tradeType === "LONG"
-      ? (exitP - entryP) * pnlQty
-      : (entryP - exitP) * pnlQty;
-
-  return {
-    realizedPnl: grossPnl - charges,
-    capitalUsed,
-    markedPnl: calculateOpenPnl({ trade: input, isClosed: true }),
-  };
+  const gross = trade.status === "CLOSED" ? realizedPnl : realizedPnl + unrealizedPnl;
+  return gross - charges;
 }
 
 export function calculateWinRate(trades: Pick<Trade, "netPnl">[]) {
   if (!trades.length) return 0;
-  const winners = trades.filter((trade) => trade.netPnl > 0).length;
+  const winners = trades.filter((t) => t.netPnl > 0).length;
   return (winners / trades.length) * 100;
 }
 
 export function calculateProfitFactor(trades: Pick<Trade, "netPnl">[]) {
-  const grossProfit = trades.filter((trade) => trade.netPnl > 0).reduce((sum, trade) => sum + trade.netPnl, 0);
-  const grossLoss = Math.abs(trades.filter((trade) => trade.netPnl < 0).reduce((sum, trade) => sum + trade.netPnl, 0));
+  const grossProfit = trades.filter((t) => t.netPnl > 0).reduce((s, t) => s + t.netPnl, 0);
+  const grossLoss = Math.abs(trades.filter((t) => t.netPnl < 0).reduce((s, t) => s + t.netPnl, 0));
   if (grossLoss === 0) return grossProfit > 0 ? grossProfit : 0;
   return grossProfit / grossLoss;
 }
 
 export function calculateAverageWinLoss(trades: Pick<Trade, "netPnl">[]) {
-  const wins = trades.filter((trade) => trade.netPnl > 0);
-  const losses = trades.filter((trade) => trade.netPnl < 0);
-
-  const averageWin = wins.reduce((sum, trade) => sum + trade.netPnl, 0) / (wins.length || 1);
-  const averageLoss = Math.abs(losses.reduce((sum, trade) => sum + trade.netPnl, 0)) / (losses.length || 1);
-
+  const wins = trades.filter((t) => t.netPnl > 0);
+  const losses = trades.filter((t) => t.netPnl < 0);
+  const averageWin = wins.reduce((s, t) => s + t.netPnl, 0) / (wins.length || 1);
+  const averageLoss = Math.abs(losses.reduce((s, t) => s + t.netPnl, 0)) / (losses.length || 1);
   return {
     averageWin,
     averageLoss,
@@ -282,38 +259,37 @@ export function calculateAverageWinLoss(trades: Pick<Trade, "netPnl">[]) {
   };
 }
 
-export function calculateMaxCapitalDeployed(trades: Trade[]) {
+export function calculateMaxCapitalDeployed(trades: TradeWithTxns[]) {
   const events = trades.flatMap((trade) => [
     { at: getFirstEntryTime(trade).getTime(), delta: trade.capitalUsed, order: 1 },
     { at: (getLastExitTime(trade) ?? new Date()).getTime(), delta: -trade.capitalUsed, order: 0 },
   ]);
 
-  events.sort((a, b) => a.at === b.at ? a.order - b.order : a.at - b.at);
+  events.sort((a, b) => (a.at === b.at ? a.order - b.order : a.at - b.at));
 
   let running = 0;
   let peak = 0;
-
-  for (const event of events) {
-    running += event.delta;
+  for (const ev of events) {
+    running += ev.delta;
     peak = Math.max(peak, running);
   }
   return peak;
 }
 
-export function calculateMaxDrawdown(trades: Trade[], maxCapitalDeployed: number) {
+export function calculateMaxDrawdown(trades: TradeWithTxns[], maxCapitalDeployed: number) {
   if (!trades.length || maxCapitalDeployed <= 0) return 0;
 
-  const sortedTrades = [...trades].sort((a, b) => {
-    const left = getLastExitTime(a)?.getTime() ?? 0;
-    const right = getLastExitTime(b)?.getTime() ?? 0;
-    return left - right;
+  const sorted = [...trades].sort((a, b) => {
+    const la = getLastExitTime(a)?.getTime() ?? 0;
+    const lb = getLastExitTime(b)?.getTime() ?? 0;
+    return la - lb;
   });
 
   let cumulativePnl = 0;
   let peakReturn = 0;
   let maxDrawdown = 0;
 
-  for (const trade of sortedTrades) {
+  for (const trade of sorted) {
     cumulativePnl += trade.netPnl;
     const currentReturn = (cumulativePnl / maxCapitalDeployed) * 100;
     peakReturn = Math.max(peakReturn, currentReturn);
@@ -322,14 +298,14 @@ export function calculateMaxDrawdown(trades: Trade[], maxCapitalDeployed: number
   return maxDrawdown;
 }
 
-export function buildDashboardMetrics(trades: Trade[]) {
-  const closedTrades = trades.filter((trade) => trade.status === "CLOSED");
+export function buildDashboardMetrics(trades: TradeWithTxns[]) {
+  const closedTrades = trades.filter((t) => t.status === "CLOSED");
   const maxCapitalDeployed = calculateMaxCapitalDeployed(closedTrades);
-  const totalNetPnl = closedTrades.reduce((sum, trade) => sum + trade.netPnl, 0);
+  const totalNetPnl = closedTrades.reduce((s, t) => s + t.netPnl, 0);
 
   return {
     totalTrades: closedTrades.length,
-    openTrades: trades.filter((trade) => trade.status === "OPEN").length,
+    openTrades: trades.filter((t) => t.status === "OPEN").length,
     winRate: calculateWinRate(closedTrades),
     ...calculateAverageWinLoss(closedTrades),
     profitFactor: calculateProfitFactor(closedTrades),
@@ -340,8 +316,8 @@ export function buildDashboardMetrics(trades: Trade[]) {
   };
 }
 
-export function groupTradesBySymbol(trades: Trade[]) {
-  const closedTrades = trades.filter((trade) => trade.status === "CLOSED");
+export function groupTradesBySymbol(trades: TradeWithTxns[]) {
+  const closedTrades = trades.filter((t) => t.status === "CLOSED");
   const grouped = new Map<string, any>();
 
   for (const trade of closedTrades) {
@@ -364,7 +340,7 @@ export function groupTradesBySymbol(trades: Trade[]) {
     current.totalNetPnl += trade.netPnl;
     current.profitableTrades += trade.netPnl > 0 ? 1 : 0;
     current.weightedEntry += entryP * entryQ;
-    current.weightedExit += exitP * entryQ; // Approximating exit weight by qty
+    current.weightedExit += exitP * entryQ;
 
     grouped.set(trade.symbol, current);
   }
@@ -381,73 +357,18 @@ export function groupTradesBySymbol(trades: Trade[]) {
 
 export function normalizeTradePayload(payload: z.infer<typeof tradePayloadSchema>) {
   return {
-    ...payload,
     competitionId: payload.competitionId || null,
     symbol: payload.symbol.trim().toUpperCase(),
+    segment: payload.segment,
+    tradeType: payload.tradeType,
+    status: payload.status,
     tags: sanitizeTags(payload.tags),
     notes: payload.notes?.trim() ?? "",
-    entryPrice2: payload.entryPrice2 ?? null,
-    entryQty2: payload.entryQty2 ?? null,
-    entryTime2: payload.entryTime2 ?? null,
-    entryPrice3: payload.entryPrice3 ?? null,
-    entryQty3: payload.entryQty3 ?? null,
-    entryTime3: payload.entryTime3 ?? null,
-    exitPrice1: payload.exitPrice1 ?? null,
-    exitQty1: payload.exitQty1 ?? null,
-    exitTime1: payload.exitTime1 ?? null,
-    exitPrice2: payload.exitPrice2 ?? null,
-    exitQty2: payload.exitQty2 ?? null,
-    exitTime2: payload.exitTime2 ?? null,
-    exitPrice3: payload.exitPrice3 ?? null,
-    exitQty3: payload.exitQty3 ?? null,
-    exitTime3: payload.exitTime3 ?? null,
+    charges: payload.charges,
     closingPrice: payload.closingPrice ?? null,
-    capitalUsed: payload.capitalUsed ?? null,
     stopLoss: payload.stopLoss ?? null,
+    transactions: payload.transactions,
   };
-}
-
-export function buildJournalRows(trades: Trade[], portfolioCapital: number) {
-  return trades.map((trade, index) => {
-    const entryP = getWeightedEntryPrice(trade);
-    const entryQ = getTotalEntryQty(trade);
-    
-    const markedPnl = calculateOpenPnl({ trade, isClosed: trade.status === "CLOSED" });
-    const capital = trade.capitalUsed || (entryP * entryQ);
-    const displayPnl = trade.status === "CLOSED" ? trade.netPnl : markedPnl;
-    
-    let slPct = 0;
-    if (trade.stopLoss && entryP > 0) {
-      slPct = Math.abs((trade.stopLoss - entryP) / entryP) * 100;
-    }
-
-    return {
-      id: trade.id,
-      rowNumber: trade.rowIndex || index + 1,
-      entryExit: trade.status === "CLOSED" ? "Exit" : "Entry",
-      type: trade.tradeType,
-      ticker: trade.symbol,
-      entryDate: getFirstEntryTime(trade),
-
-      // Derived flat metrics for easy UI rendering if needed
-      price: entryP,
-      qty: entryQ,
-      
-      stopLoss: trade.stopLoss,
-      slPct: slPct,
-      setup: parseTags(trade.tags).join(", ") || "Manual",
-      capital,
-      allocationPct: portfolioCapital > 0 ? (capital / portfolioCapital) * 100 : 0,
-      pnlOpen: trade.status === "OPEN" ? markedPnl : 0,
-      pnlCombined: displayPnl,
-      pnlPct: capital > 0 ? (displayPnl / capital) * 100 : 0,
-      ageDays: Math.max(differenceInDays(new Date(), getFirstEntryTime(trade)), 0),
-      impactPct: portfolioCapital > 0 ? (displayPnl / portfolioCapital) * 100 : 0,
-      closingPrice: trade.closingPrice,
-      status: trade.status,
-      originalTrade: trade,
-    };
-  });
 }
 
 export type EntryLeg = {
@@ -460,6 +381,7 @@ export type GroupedTradeRow = {
   id: string;
   symbol: string;
   status: "OPEN" | "CLOSED";
+  derivedStatus: "OPEN" | "CLOSED"; // CLOSED when openQty reaches 0 regardless of DB status
   tradeType: string;
   entryLegs: EntryLeg[];
   exitLegs: EntryLeg[];
@@ -470,6 +392,7 @@ export type GroupedTradeRow = {
   exitDateTime: Date | null;
   pnlPct: number;
   pnlAmount: number;
+  capital: number;
   allocationPct: number;
   ageDays: number;
   impactPct: number;
@@ -478,89 +401,46 @@ export type GroupedTradeRow = {
   stopLossPct: number | null;
 };
 
-/**
- * Build grouped journal rows matching the screenshot layout.
- * Each trade record becomes a group showing:
- *   - Individual entry legs as sub-rows
- *   - Consolidated exit (weighted avg price, total qty, last exit time)
- *   - P/L % with absolute P/L and Potential P/L
- */
-export function buildGroupedJournalRows(trades: Trade[], portfolioCapital: number = 100000): GroupedTradeRow[] {
+export function buildGroupedJournalRows(
+  trades: TradeWithTxns[],
+  portfolioCapital: number = 100000
+): GroupedTradeRow[] {
   return trades.map((trade) => {
-    // Collect entry legs that have data
-    const entryLegs: EntryLeg[] = [];
-    if (trade.entryQty1 && trade.entryPrice1) {
-      entryLegs.push({
-        qty: trade.entryQty1,
-        price: trade.entryPrice1,
-        dateTime: trade.entryTime1,
-      });
-    }
-    if (trade.entryQty2 && trade.entryPrice2 && trade.entryTime2) {
-      entryLegs.push({
-        qty: trade.entryQty2,
-        price: trade.entryPrice2,
-        dateTime: trade.entryTime2,
-      });
-    }
-    if (trade.entryQty3 && trade.entryPrice3 && trade.entryTime3) {
-      entryLegs.push({
-        qty: trade.entryQty3,
-        price: trade.entryPrice3,
-        dateTime: trade.entryTime3,
-      });
-    }
+    const entries = getEntryTransactions(trade);
+    const exits = getExitTransactions(trade);
 
-    const exitLegs: EntryLeg[] = [];
-    if (trade.exitQty1 && trade.exitPrice1 && trade.exitTime1) {
-      exitLegs.push({
-        qty: trade.exitQty1,
-        price: trade.exitPrice1,
-        dateTime: trade.exitTime1,
-      });
-    }
-    if (trade.exitQty2 && trade.exitPrice2 && trade.exitTime2) {
-      exitLegs.push({
-        qty: trade.exitQty2,
-        price: trade.exitPrice2,
-        dateTime: trade.exitTime2,
-      });
-    }
-    if (trade.exitQty3 && trade.exitPrice3 && trade.exitTime3) {
-      exitLegs.push({
-        qty: trade.exitQty3,
-        price: trade.exitPrice3,
-        dateTime: trade.exitTime3,
-      });
-    }
+    const entryLegs: EntryLeg[] = entries.map((t) => ({
+      qty: t.quantity,
+      price: t.price,
+      dateTime: new Date(t.dateTime),
+    }));
+
+    const exitLegs: EntryLeg[] = exits.map((t) => ({
+      qty: t.quantity,
+      price: t.price,
+      dateTime: new Date(t.dateTime),
+    }));
 
     const totalEntryQty = getTotalEntryQty(trade);
     const weightedEntry = getWeightedEntryPrice(trade);
     const exitQ = getTotalExitQty(trade);
     const exitP = getWeightedExitPrice(trade);
     const lastExit = getLastExitTime(trade);
-
     const isClosed = trade.status === "CLOSED";
-    const markedPnl = calculateOpenPnl({ trade, isClosed });
-    const displayPnl = isClosed ? trade.netPnl : markedPnl;
-    const capital = trade.capitalUsed || (weightedEntry * totalEntryQty);
+
+    const displayPnl = isClosed ? trade.netPnl : calculateOpenPnl(trade);
+    const capital = trade.capitalUsed || weightedEntry * totalEntryQty;
     const pnlPct = capital > 0 ? (displayPnl / capital) * 100 : 0;
-    
-    // Allocation %: Open Capital / Portfolio Capital
+
     const openQty = Math.max(0, totalEntryQty - exitQ);
+    const derivedStatus: "OPEN" | "CLOSED" = openQty <= 0 ? "CLOSED" : trade.status as "OPEN" | "CLOSED";
     const openCapital = openQty > 0 ? weightedEntry * openQty : 0;
     const allocationPct = portfolioCapital > 0 ? (openCapital / portfolioCapital) * 100 : 0;
-    
-    // Portfolio Impact %
     const impactPct = portfolioCapital > 0 ? (displayPnl / portfolioCapital) * 100 : 0;
 
-    // Age in Days
-    let ageDays = 0;
     const firstEntry = getFirstEntryTime(trade);
-    if (firstEntry) {
-      const endDate = isClosed && lastExit ? lastExit : new Date();
-      ageDays = Math.max(0, differenceInDays(endDate, firstEntry));
-    }
+    const endDate = derivedStatus === "CLOSED" && lastExit ? lastExit : new Date();
+    const ageDays = Math.max(0, differenceInDays(endDate, firstEntry));
 
     let stopLossPct: number | null = null;
     if (trade.stopLoss && trade.stopLoss > 0 && weightedEntry > 0) {
@@ -571,6 +451,7 @@ export function buildGroupedJournalRows(trades: Trade[], portfolioCapital: numbe
       id: trade.id,
       symbol: trade.symbol,
       status: trade.status as "OPEN" | "CLOSED",
+      derivedStatus,
       tradeType: trade.tradeType,
       entryLegs,
       exitLegs,
@@ -581,6 +462,7 @@ export function buildGroupedJournalRows(trades: Trade[], portfolioCapital: numbe
       exitDateTime: lastExit,
       pnlPct,
       pnlAmount: displayPnl,
+      capital,
       allocationPct,
       ageDays,
       impactPct,
@@ -591,8 +473,46 @@ export function buildGroupedJournalRows(trades: Trade[], portfolioCapital: numbe
   });
 }
 
+export function buildJournalRows(trades: TradeWithTxns[], portfolioCapital: number) {
+  return trades.map((trade, index) => {
+    const entryP = getWeightedEntryPrice(trade);
+    const entryQ = getTotalEntryQty(trade);
+    const displayPnl = trade.status === "CLOSED" ? trade.netPnl : calculateOpenPnl(trade);
+    const capital = trade.capitalUsed || entryP * entryQ;
+
+    let slPct = 0;
+    if (trade.stopLoss && entryP > 0) {
+      slPct = Math.abs((trade.stopLoss - entryP) / entryP) * 100;
+    }
+
+    return {
+      id: trade.id,
+      rowNumber: trade.rowIndex || index + 1,
+      entryExit: trade.status === "CLOSED" ? "Exit" : "Entry",
+      type: trade.tradeType,
+      ticker: trade.symbol,
+      entryDate: getFirstEntryTime(trade),
+      price: entryP,
+      qty: entryQ,
+      stopLoss: trade.stopLoss,
+      slPct,
+      setup: parseTags(trade.tags).join(", ") || "Manual",
+      capital,
+      allocationPct: portfolioCapital > 0 ? (capital / portfolioCapital) * 100 : 0,
+      pnlOpen: trade.status === "OPEN" ? calculateOpenPnl(trade) : 0,
+      pnlCombined: displayPnl,
+      pnlPct: capital > 0 ? (displayPnl / capital) * 100 : 0,
+      ageDays: Math.max(differenceInDays(new Date(), getFirstEntryTime(trade)), 0),
+      impactPct: portfolioCapital > 0 ? (displayPnl / portfolioCapital) * 100 : 0,
+      closingPrice: trade.closingPrice,
+      status: trade.status,
+      originalTrade: trade,
+    };
+  });
+}
+
 export type LeaderboardInput = {
-  trades: Trade[];
+  trades: TradeWithTxns[];
   user: User;
 };
 
@@ -613,9 +533,7 @@ export function buildLeaderboardEntries(entries: LeaderboardInput[]) {
   return entries
     .map(({ trades, user }) => {
       const eligibleTrades = trades.filter(
-        (trade) =>
-          trade.status === "CLOSED" &&
-          trade.capitalUsed >= MIN_COMPETITION_CAPITAL_PER_TRADE,
+        (t) => t.status === "CLOSED" && t.capitalUsed >= MIN_COMPETITION_CAPITAL_PER_TRADE
       );
 
       if (
@@ -626,9 +544,11 @@ export function buildLeaderboardEntries(entries: LeaderboardInput[]) {
         return null;
       }
 
-      const totalNetPnl = eligibleTrades.reduce((sum, trade) => sum + trade.netPnl, 0);
+      const totalNetPnl = eligibleTrades.reduce((s, t) => s + t.netPnl, 0);
+      const totalCapitalUsed = eligibleTrades.reduce((s, t) => s + t.capitalUsed, 0);
       const maxCapitalDeployed = calculateMaxCapitalDeployed(eligibleTrades);
-      const returnPercentage = maxCapitalDeployed > 0 ? (totalNetPnl / maxCapitalDeployed) * 100 : 0;
+      const returnPercentage =
+        totalCapitalUsed > 0 ? (totalNetPnl / totalCapitalUsed) * 100 : 0;
 
       return {
         userId: user.id,
@@ -652,21 +572,18 @@ export function buildLeaderboardEntries(entries: LeaderboardInput[]) {
       }
       return right.winRate - left.winRate;
     })
-    .map((entry, index) => ({
-      ...entry,
-      rank: index + 1,
-    }));
+    .map((entry, index) => ({ ...entry, rank: index + 1 }));
 }
 
 export function filterTradesByTag<T extends { tags: string }>(trades: T[], tag?: string) {
   if (!tag) return trades;
   const normalizedTag = tag.toLowerCase();
-  return trades.filter((trade) => parseTags(trade.tags).some((tradeTag) => tradeTag === normalizedTag));
+  return trades.filter((t) => parseTags(t.tags).some((tradeTag) => tradeTag === normalizedTag));
 }
 
 export function getCompetitionWindowTrades(
-  trades: Trade[],
-  competition: Pick<Competition, "startDate" | "endDate">,
+  trades: TradeWithTxns[],
+  competition: Pick<Competition, "startDate" | "endDate">
 ) {
   return trades.filter((trade) => {
     if (trade.status !== "CLOSED") return false;

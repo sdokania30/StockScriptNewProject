@@ -6,16 +6,18 @@ const traderNavigation = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/trades", label: "Journal", icon: BarChart3 },
   { href: "/trades/new", label: "New Trade", icon: PencilLine },
-  { href: "/competitions", label: "Competitions", icon: Flag },
   { href: "/leaderboard", label: "Leaderboard", icon: Medal },
+];
+
+const adminNavigation = [
+  ...traderNavigation,
+  { href: "/competitions", label: "Competitions", icon: Flag },
+  { href: "/admin", label: "Admin", icon: Shield },
 ];
 
 export async function AppShell({ children }: { children: React.ReactNode }) {
   const user = await getCurrentUser();
-  const navigation =
-    user?.role === "ADMIN"
-      ? [...traderNavigation, { href: "/admin", label: "Admin", icon: Shield }]
-      : traderNavigation;
+  const navigation = user?.role === "ADMIN" ? adminNavigation : traderNavigation;
 
   return (
     <div className="relative min-h-screen overflow-hidden">

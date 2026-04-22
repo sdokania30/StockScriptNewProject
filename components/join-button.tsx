@@ -31,13 +31,15 @@ export function JoinButton({
           setIsSubmitting(true);
           setError("");
 
-          const response = await fetch(`/api/competitions/${competitionId}/join`, {
+          const response = await fetch(`/api/competitions/${competitionId}/participants`, {
             method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: "" }),
           });
           const result = await response.json();
 
           if (!response.ok) {
-            setError(result.error || "Unable to join.");
+            setError(result.error || "Unable to request join.");
             setIsSubmitting(false);
             return;
           }
@@ -46,7 +48,7 @@ export function JoinButton({
         }}
         className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isSubmitting ? "Joining..." : "Join competition"}
+        {isSubmitting ? "Requesting..." : "Request to join"}
       </button>
 
       {error ? <p className="text-sm text-loss">{error}</p> : null}

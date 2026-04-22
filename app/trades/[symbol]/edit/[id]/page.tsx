@@ -14,6 +14,7 @@ export default async function EditTradePage({
 
   const trade = await prisma.trade.findUnique({
     where: { id: params.id, userId: user.id },
+    include: { transactions: { orderBy: { dateTime: "asc" } } },
   });
 
   if (!trade) {

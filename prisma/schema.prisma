@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
@@ -22,6 +23,7 @@ model User {
   trades                  Trade[]
   competitionsCreated     Competition[]            @relation("CompetitionsCreated")
   competitionParticipants CompetitionParticipant[]
+  competitionRequests     CompetitionRequest[]
   competitionStats        UserCompetitionStat[]
   sessions                Session[]
   verificationTokens      EmailVerificationToken[]
@@ -34,63 +36,54 @@ model User {
 }
 
 model Trade {
-  id            String      @id @default(cuid())
+  id            String        @id @default(cuid())
   userId        String
   competitionId String?
   symbol        String
   segment       String
   tradeType     String
-  entryPrice1   Float
-  entryQty1     Float
-  entryTime1    DateTime
-  
-  entryPrice2   Float?
-  entryQty2     Float?
-  entryTime2    DateTime?
-
-  entryPrice3   Float?
-  entryQty3     Float?
-  entryTime3    DateTime?
-
-  exitPrice1    Float?
-  exitQty1      Float?
-  exitTime1     DateTime?
-
-  exitPrice2    Float?
-  exitQty2      Float?
-  exitTime2     DateTime?
-
-  exitPrice3    Float?
-  exitQty3      Float?
-  exitTime3     DateTime?
-
   closingPrice  Float?
   stopLoss      Float?
-  charges       Float      @default(0)
-  capitalUsed   Float      @default(0)
-  netPnl        Float      @default(0)
-  rowIndex      Int         @default(0)
-  status        String      @default("OPEN")
-  tags          String      @default("")
-  notes         String      @default("")
+  charges       Float         @default(0)
+  capitalUsed   Float         @default(0)
+  netPnl        Float         @default(0)
+  rowIndex      Int           @default(0)
+  status        String        @default("OPEN")
+  tags          String        @default("")
+  notes         String        @default("")
+  firstEntryAt  DateTime?
   lockedAt      DateTime?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  competition   Competition? @relation(fields: [competitionId], references: [id], onDelete: SetNull)
-  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  competition   Competition?  @relation(fields: [competitionId], references: [id], onDelete: SetNull)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   images        TradeImage[]
+  transactions  Transaction[]
 
-  @@index([userId, status, updatedAt])
-  @@index([competitionId, status, updatedAt])
+  @@index([userId, status, firstEntryAt])
+  @@index([competitionId, status, firstEntryAt])
   @@index([symbol, userId])
+}
+
+model Transaction {
+  id        String   @id @default(cuid())
+  tradeId   String
+  type      String
+  price     Float
+  quantity  Float
+  dateTime  DateTime
+  order     Int      @default(0)
+  trade     Trade    @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+
+  @@index([tradeId, type, dateTime])
 }
 
 model TradeImage {
   id         String   @id @default(cuid())
-  tradeId     String
-  imageUrl    String
-  uploadedAt  DateTime @default(now())
-  trade       Trade    @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+  tradeId    String
+  imageUrl   String
+  uploadedAt DateTime @default(now())
+  trade      Trade    @relation(fields: [tradeId], references: [id], onDelete: Cascade)
 
   @@index([tradeId])
 }
@@ -106,6 +99,7 @@ model Competition {
   updatedAt     DateTime                 @updatedAt
   creator       User                     @relation("CompetitionsCreated", fields: [createdBy], references: [id], onDelete: Cascade)
   participants  CompetitionParticipant[]
+  requests      CompetitionRequest[]
   trades        Trade[]
   stats         UserCompetitionStat[]
 
@@ -113,28 +107,43 @@ model Competition {
 }
 
 model CompetitionParticipant {
-  id             String       @id @default(cuid())
+  id             String      @id @default(cuid())
   competitionId  String
   userId         String
-  joinedAt       DateTime     @default(now())
-  competition    Competition  @relation(fields: [competitionId], references: [id], onDelete: Cascade)
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt       DateTime    @default(now())
+  competition    Competition @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([competitionId, userId])
   @@index([competitionId])
 }
 
+model CompetitionRequest {
+  id             String      @id @default(cuid())
+  competitionId  String
+  userId         String
+  status         String      @default("PENDING")
+  createdAt      DateTime    @default(now())
+  approvedBy     String?
+  approvedAt     DateTime?
+  competition    Competition @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([competitionId, userId])
+  @@index([competitionId, status])
+}
+
 model UserCompetitionStat {
   userId              String
   competitionId       String
-  totalNetPnl         Float    @default(0)
-  maxCapitalDeployed  Float    @default(0)
-  returnPercentage    Float    @default(0)
-  maxDrawdown         Float    @default(0)
-  winRate             Float    @default(0)
-  totalTrades         Int      @default(0)
-  profitFactor        Float    @default(0)
-  updatedAt           DateTime @updatedAt
+  totalNetPnl         Float       @default(0)
+  maxCapitalDeployed  Float       @default(0)
+  returnPercentage    Float       @default(0)
+  maxDrawdown         Float       @default(0)
+  winRate             Float       @default(0)
+  totalTrades         Int         @default(0)
+  profitFactor        Float       @default(0)
+  updatedAt           DateTime    @updatedAt
   competition         Competition @relation(fields: [competitionId], references: [id], onDelete: Cascade)
   user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -143,25 +152,25 @@ model UserCompetitionStat {
 }
 
 model Session {
-  id          String   @id @default(cuid())
-  token       String   @unique
-  userId      String
-  expiresAt   DateTime
-  createdAt   DateTime @default(now())
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt])
 }
 
 model EmailVerificationToken {
-  id          String   @id @default(cuid())
-  token       String   @unique
-  userId      String
-  email       String
-  expiresAt   DateTime
-  verifiedAt  DateTime?
-  createdAt   DateTime @default(now())
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String    @id @default(cuid())
+  token      String    @unique
+  userId     String
+  email      String
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, email, expiresAt])
 }

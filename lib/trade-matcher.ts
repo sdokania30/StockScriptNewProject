@@ -8,198 +8,123 @@ export type RawTransaction = {
   quantity: number;
 };
 
+export type TxLeg = {
+  type: "BUY" | "SELL";
+  price: number;
+  quantity: number;
+  date: Date;
+};
+
 export type MatchedTrade = {
   ticker: string;
   uniqueKey: number;
-
-  entryDate1: Date;
-  entryPrice1: number;
-  entryQty1: number;
-  entryDate2?: Date | null;
-  entryPrice2?: number | null;
-  entryQty2?: number | null;
-  entryDate3?: Date | null;
-  entryPrice3?: number | null;
-  entryQty3?: number | null;
-
-  exitDate1?: Date | null;
-  exitPrice1?: number | null;
-  exitQty1?: number | null;
-  exitDate2?: Date | null;
-  exitPrice2?: number | null;
-  exitQty2?: number | null;
-  exitDate3?: Date | null;
-  exitPrice3?: number | null;
-  exitQty3?: number | null;
-
   status: TradeStatusValue;
   tradeType: "LONG" | "SHORT";
+  transactions: TxLeg[];
 };
 
 /**
- * Ported from the legacy Python preprocessing script.
- * Groups unlimited linear broker executions into a condensed 3-column architecture.
- * The first two executions remain intact. The 3rd execution (and beyond) are aggregated
- * into a single weighted-average block.
- */
-export function aggregateLegs(
-  transactions: RawTransaction[],
-  prefix: "entry" | "exit"
-) {
-  const result: Record<string, any> = {};
-
-  if (transactions.length <= 2) {
-    transactions.forEach((txn, i) => {
-      result[`${prefix}Date${i + 1}`] = txn.date;
-      result[`${prefix}Price${i + 1}`] = txn.price;
-      result[`${prefix}Qty${i + 1}`] = txn.quantity;
-    });
-  } else {
-    // Populate the first 2 normally
-    for (let i = 0; i < 2; i++) {
-      result[`${prefix}Date${i + 1}`] = transactions[i].date;
-      result[`${prefix}Price${i + 1}`] = transactions[i].price;
-      result[`${prefix}Qty${i + 1}`] = transactions[i].quantity;
-    }
-
-    // Aggregate remaining (Index 2 and beyond)
-    const remaining = transactions.slice(2);
-    
-    // Find absolute latest date in the remaining block
-    const maxDate = remaining.reduce((latest, current) => {
-      return current.date > latest ? current.date : latest;
-    }, remaining[0].date);
-
-    const totalQty = remaining.reduce((sum, t) => sum + t.quantity, 0);
-    
-    const weightedSum = remaining.reduce(
-      (sum, t) => sum + t.price * t.quantity,
-      0
-    );
-    const weightedAvgPrice = totalQty > 0 ? weightedSum / totalQty : 0;
-
-    result[`${prefix}Date3`] = maxDate;
-    result[`${prefix}Price3`] = weightedAvgPrice;
-    result[`${prefix}Qty3`] = totalQty;
-  }
-
-  return result;
-}
-
-/**
- * Parses raw linear broker executions (buys/sells) and groups them temporally into
- * matched Trade rows using FIFO tracking, exactly matching the Python prototype.
+ * CORE TRADE MATCHING LOGIC
+ * ─────────────────────────────────────────────────────────────────────
+ * Rule: A trade is OPEN when cumulative (BUY qty − SELL qty) ≠ 0.
+ *       A trade is CLOSED when cumulative qty reaches exactly 0.
+ *
+ * The algorithm walks each stock's transactions in strict chronological order
+ * and accumulates a running net position:
+ *   • BUY  → net position increases
+ *   • SELL → net position decreases
+ *
+ * When net position hits 0 → the current batch of transactions forms one
+ * CLOSED trade. The queue is reset and the next transaction for the same
+ * ticker begins a fresh, independent trade.
+ *
+ * Supported patterns (all within one trade boundary):
+ *   1. Simple:      BUY 100  → SELL 100                   (2 txn, CLOSED)
+ *   2. Pyramid in:  BUY 100 → BUY 50 → SELL 150           (3 txn, CLOSED)
+ *   3. Scale out:   BUY 200 → SELL 100 → SELL 100         (3 txn, CLOSED)
+ *   4. Complex:     BUY 100 → BUY 50 → SELL 50 → SELL 100 (4 txn, CLOSED)
+ *   5. Re-entry:    [Closed trade] → NEW BUY starts Trade #2 on same ticker
+ *   6. Short:       SELL 100 → BUY 100                    (first txn is SELL → SHORT)
+ *
+ * Future enhancement hooks:
+ *   • Lot-level FIFO P/L (match each exit to earliest unmatched entry lot)
+ *   • Intraday vs swing classification (entry/exit same session)
+ *   • Partial-close sub-tracking without closing the trade boundary
+ * ─────────────────────────────────────────────────────────────────────
  */
 export function buildTradesFromTransactions(
-  transactions: RawTransaction[]
+  rawTransactions: RawTransaction[]
 ): MatchedTrade[] {
-  // Sort strictly by chronology
-  const chronological = [...transactions].sort(
+  // Step 1: Sort all transactions strictly by date (oldest first)
+  const chronological = [...rawTransactions].sort(
     (a, b) => a.date.getTime() - b.date.getTime()
   );
 
-  // Group by Ticker
-  const grouped = chronological.reduce((acc, txn) => {
-    if (!acc[txn.ticker]) acc[txn.ticker] = [];
-    acc[txn.ticker].push(txn);
-    return acc;
-  }, {} as Record<string, RawTransaction[]>);
+  // Step 2: Group by ticker symbol
+  const byTicker: Record<string, RawTransaction[]> = {};
+  for (const txn of chronological) {
+    if (!byTicker[txn.ticker]) byTicker[txn.ticker] = [];
+    byTicker[txn.ticker].push(txn);
+  }
 
   const matchedTrades: MatchedTrade[] = [];
   let uniqueKey = 1;
 
-  for (const [ticker, group] of Object.entries(grouped)) {
-    let currentPositionQty = 0;
-    let buyList: RawTransaction[] = [];
-    let sellList: RawTransaction[] = [];
+  for (const [ticker, txns] of Object.entries(byTicker)) {
+    // Running net position for this ticker's current open trade
+    let netQty = 0;
+    // Transactions accumulated since the last trade boundary (0-crossing)
+    let currentBatch: RawTransaction[] = [];
 
-    for (const txn of group) {
+    for (const txn of txns) {
+      currentBatch.push(txn);
+
       if (txn.type === "BUY") {
-        buyList.push(txn);
-        currentPositionQty += txn.quantity;
-      } else if (txn.type === "SELL") {
-        sellList.push(txn);
-        currentPositionQty -= txn.quantity;
+        netQty += txn.quantity;
+      } else {
+        netQty -= txn.quantity;
+      }
 
-        // If the position is flattened entirely, close the trade loop
-        if (Math.abs(currentPositionQty) < 0.0001) {
-          const isShort = sellList.length > 0 && (buyList.length === 0 || sellList[0].date < buyList[0].date);
-          const entryList = isShort ? sellList : buyList;
-          const exitList = isShort ? buyList : sellList;
+      // Trade boundary: net position has returned exactly to zero
+      // Round to 4 decimal places to avoid floating-point drift
+      if (Math.abs(netQty) < 0.0001) {
+        // Determine trade direction from the first transaction in the batch
+        const isShort = currentBatch[0].type === "SELL";
 
-          const entryDetails = aggregateLegs(entryList, "entry");
-          const exitDetails = aggregateLegs(exitList, "exit");
+        matchedTrades.push({
+          ticker,
+          uniqueKey: uniqueKey++,
+          status: "CLOSED",
+          tradeType: isShort ? "SHORT" : "LONG",
+          transactions: currentBatch.map((t) => ({
+            type: t.type,
+            price: t.price,
+            quantity: t.quantity,
+            date: t.date,
+          })),
+        });
 
-          matchedTrades.push({
-            ticker,
-            uniqueKey: uniqueKey++,
-            status: "CLOSED",
-            tradeType: isShort ? "SHORT" : "LONG",
-            
-            entryDate1: entryDetails.entryDate1,
-            entryPrice1: entryDetails.entryPrice1,
-            entryQty1: entryDetails.entryQty1,
-            entryDate2: entryDetails.entryDate2,
-            entryPrice2: entryDetails.entryPrice2,
-            entryQty2: entryDetails.entryQty2,
-            entryDate3: entryDetails.entryDate3,
-            entryPrice3: entryDetails.entryPrice3,
-            entryQty3: entryDetails.entryQty3,
-
-            exitDate1: exitDetails.exitDate1,
-            exitPrice1: exitDetails.exitPrice1,
-            exitQty1: exitDetails.exitQty1,
-            exitDate2: exitDetails.exitDate2,
-            exitPrice2: exitDetails.exitPrice2,
-            exitQty2: exitDetails.exitQty2,
-            exitDate3: exitDetails.exitDate3,
-            exitPrice3: exitDetails.exitPrice3,
-            exitQty3: exitDetails.exitQty3,
-          });
-
-          // Reset queues for next execution cycle on the same ticker
-          buyList = [];
-          sellList = [];
-          currentPositionQty = 0;
-        }
+        // Reset: next transaction for this ticker starts a brand-new trade
+        currentBatch = [];
+        netQty = 0;
       }
     }
 
-    // After parsing the group, if there are still active legs, 
-    // export them as an OPEN trade.
-    if (buyList.length > 0 || sellList.length > 0) {
-      const isShort = sellList.length > 0 && (buyList.length === 0 || sellList[0].date < buyList[0].date);
-      const entryList = isShort ? sellList : buyList;
-      const exitList = isShort ? buyList : sellList;
-
-      const entryDetails = aggregateLegs(entryList, "entry");
-      const exitDetails = aggregateLegs(exitList, "exit"); 
+    // Any remaining transactions form an OPEN trade (position not yet closed)
+    if (currentBatch.length > 0) {
+      const isShort = currentBatch[0].type === "SELL";
 
       matchedTrades.push({
         ticker,
         uniqueKey: uniqueKey++,
         status: "OPEN",
         tradeType: isShort ? "SHORT" : "LONG",
-        
-        entryDate1: entryDetails.entryDate1,
-        entryPrice1: entryDetails.entryPrice1,
-        entryQty1: entryDetails.entryQty1,
-        entryDate2: entryDetails.entryDate2,
-        entryPrice2: entryDetails.entryPrice2,
-        entryQty2: entryDetails.entryQty2,
-        entryDate3: entryDetails.entryDate3,
-        entryPrice3: entryDetails.entryPrice3,
-        entryQty3: entryDetails.entryQty3,
-
-        exitDate1: exitDetails.exitDate1,
-        exitPrice1: exitDetails.exitPrice1,
-        exitQty1: exitDetails.exitQty1,
-        exitDate2: exitDetails.exitDate2,
-        exitPrice2: exitDetails.exitPrice2,
-        exitQty2: exitDetails.exitQty2,
-        exitDate3: exitDetails.exitDate3,
-        exitPrice3: exitDetails.exitPrice3,
-        exitQty3: exitDetails.exitQty3,
+        transactions: currentBatch.map((t) => ({
+          type: t.type,
+          price: t.price,
+          quantity: t.quantity,
+          date: t.date,
+        })),
       });
     }
   }

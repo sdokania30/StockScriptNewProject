@@ -1,37 +1,31 @@
 import { PrismaClient } from "@prisma/client";
 import { hashPassword } from "../lib/password";
-import {
-  SegmentValue,
-  TradeStatusValue,
-  TradeTypeValue,
-  calculateTradeMetrics,
-} from "../lib/trade-utils";
+import { calculateTradeMetrics } from "../lib/trade-utils";
 
 const prisma = new PrismaClient();
+
+type TxInput = { type: "BUY" | "SELL"; price: number; quantity: number; dateTime: Date };
 
 type TradeSeed = {
   userId: string;
   competitionId: string;
   rowIndex: number;
   symbol: string;
-  segment: SegmentValue;
-  tradeType: TradeTypeValue;
-  entryPrice1: number;
-  exitPrice1: number | null;
-  closingPrice: number | null;
-  entryQty1: number;
-  charges: number;
-  entryTime1: Date;
-  exitTime1: Date | null;
-  status: TradeStatusValue;
+  segment: string;
+  tradeType: "LONG" | "SHORT";
+  status: "OPEN" | "CLOSED";
   tags: string;
   notes: string;
+  charges: number;
+  closingPrice: number | null;
+  transactions: TxInput[];
 };
 
 async function main() {
   await prisma.tradeImage.deleteMany();
   await prisma.userCompetitionStat.deleteMany();
   await prisma.competitionParticipant.deleteMany();
+  await prisma.transaction.deleteMany();
   await prisma.trade.deleteMany();
   await prisma.emailVerificationToken.deleteMany();
   await prisma.session.deleteMany();
@@ -51,6 +45,7 @@ async function main() {
     },
   });
 
+  // portfolioCapital set for realistic allocation % display
   const traders = await prisma.$transaction([
     prisma.user.create({
       data: {
@@ -58,6 +53,7 @@ async function main() {
         email: "aarav@stockscript.dev",
         passwordHash: hashPassword("Trader@123"),
         role: "TRADER",
+        portfolioCapital: 500000,
         emailVerifiedAt: new Date("2026-04-02T08:00:00.000Z"),
         approvalStatus: "APPROVED",
         approvedAt: new Date("2026-04-02T10:00:00.000Z"),
@@ -71,6 +67,7 @@ async function main() {
         email: "mira@stockscript.dev",
         passwordHash: hashPassword("Trader@123"),
         role: "TRADER",
+        portfolioCapital: 300000,
         emailVerifiedAt: new Date("2026-04-02T08:20:00.000Z"),
         approvalStatus: "APPROVED",
         approvedAt: new Date("2026-04-02T10:05:00.000Z"),
@@ -84,6 +81,7 @@ async function main() {
         email: "kabir@stockscript.dev",
         passwordHash: hashPassword("Trader@123"),
         role: "TRADER",
+        portfolioCapital: 200000,
         emailVerifiedAt: new Date("2026-04-02T08:40:00.000Z"),
         approvalStatus: "APPROVED",
         approvedAt: new Date("2026-04-02T10:15:00.000Z"),
@@ -110,16 +108,16 @@ async function main() {
       startDate: new Date("2026-04-01T00:00:00.000Z"),
       endDate: new Date("2026-04-30T23:59:59.999Z"),
       visibility: "PUBLIC",
-      createdBy: traders[0].id,
+      createdBy: admin.id,
       participants: {
-        create: traders.slice(0, 3).map((user) => ({
-          userId: user.id,
-        })),
+        create: traders.slice(0, 3).map((u) => ({ userId: u.id })),
       },
     },
   });
 
-  const tradeBlueprints: TradeSeed[] = [
+  // ── Aarav Mehta — 5 closed + 1 open (portfolioCapital 500k) ──────────────
+  // Targets strong momentum trades, ~14% return on capital deployed
+  const aaravTrades: TradeSeed[] = [
     {
       userId: traders[0].id,
       competitionId: springSprint.id,
@@ -127,16 +125,15 @@ async function main() {
       symbol: "RELIANCE",
       segment: "EQUITY",
       tradeType: "LONG",
-      entryPrice1: 2420,
-      exitPrice1: 2488,
-      closingPrice: 2488,
-      entryQty1: 20,
-      charges: 54,
-      entryTime1: new Date("2026-04-03T03:55:00.000Z"),
-      exitTime1: new Date("2026-04-03T06:10:00.000Z"),
       status: "CLOSED",
       tags: "breakout,swing",
       notes: "Clean daily breakout with retest entry.",
+      charges: 54,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 2420, quantity: 20, dateTime: new Date("2026-04-03T03:55:00.000Z") },
+        { type: "SELL", price: 2488, quantity: 20, dateTime: new Date("2026-04-03T06:10:00.000Z") },
+      ],
     },
     {
       userId: traders[0].id,
@@ -145,16 +142,15 @@ async function main() {
       symbol: "INFY",
       segment: "INTRADAY",
       tradeType: "SHORT",
-      entryPrice1: 1510,
-      exitPrice1: 1484,
-      closingPrice: 1481,
-      entryQty1: 40,
-      charges: 66,
-      entryTime1: new Date("2026-04-05T04:05:00.000Z"),
-      exitTime1: new Date("2026-04-05T07:15:00.000Z"),
       status: "CLOSED",
       tags: "opening-drive,mean-reversion",
       notes: "Strong downside drive from first hour structure.",
+      charges: 66,
+      closingPrice: null,
+      transactions: [
+        { type: "SELL", price: 1510, quantity: 40, dateTime: new Date("2026-04-05T04:05:00.000Z") },
+        { type: "BUY",  price: 1484, quantity: 40, dateTime: new Date("2026-04-05T07:15:00.000Z") },
+      ],
     },
     {
       userId: traders[0].id,
@@ -163,16 +159,16 @@ async function main() {
       symbol: "NIFTY26APR24000CE",
       segment: "OPTIONS",
       tradeType: "LONG",
-      entryPrice1: 122,
-      exitPrice1: 146,
-      closingPrice: 144,
-      entryQty1: 150,
-      charges: 88,
-      entryTime1: new Date("2026-04-08T05:10:00.000Z"),
-      exitTime1: new Date("2026-04-08T07:25:00.000Z"),
       status: "CLOSED",
       tags: "event-day,options-scalp",
       notes: "Momentum continuation after range expansion.",
+      charges: 88,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 122, quantity: 75,  dateTime: new Date("2026-04-08T05:10:00.000Z") },
+        { type: "BUY",  price: 119, quantity: 75,  dateTime: new Date("2026-04-08T05:25:00.000Z") },
+        { type: "SELL", price: 146, quantity: 150, dateTime: new Date("2026-04-08T07:25:00.000Z") },
+      ],
     },
     {
       userId: traders[0].id,
@@ -181,35 +177,55 @@ async function main() {
       symbol: "HDFCBANK",
       segment: "FUTURES",
       tradeType: "SHORT",
-      entryPrice1: 1678,
-      exitPrice1: 1644,
-      closingPrice: 1641,
-      entryQty1: 45,
-      charges: 92,
-      entryTime1: new Date("2026-04-12T03:45:00.000Z"),
-      exitTime1: new Date("2026-04-12T06:40:00.000Z"),
       status: "CLOSED",
       tags: "trend-day",
       notes: "Lower high rejection on hourly structure.",
+      charges: 92,
+      closingPrice: null,
+      transactions: [
+        { type: "SELL", price: 1678, quantity: 45, dateTime: new Date("2026-04-12T03:45:00.000Z") },
+        { type: "BUY",  price: 1644, quantity: 45, dateTime: new Date("2026-04-12T06:40:00.000Z") },
+      ],
+    },
+    {
+      // 5th qualifying trade — needed for leaderboard eligibility
+      userId: traders[0].id,
+      competitionId: springSprint.id,
+      rowIndex: 5,
+      symbol: "BAJFINANCE",
+      segment: "EQUITY",
+      tradeType: "LONG",
+      status: "CLOSED",
+      tags: "swing,sector-rotation",
+      notes: "NBFC sector rotation led by strong FII buying.",
+      charges: 55,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 7100, quantity: 10, dateTime: new Date("2026-04-17T04:00:00.000Z") },
+        { type: "SELL", price: 7480, quantity: 10, dateTime: new Date("2026-04-18T07:30:00.000Z") },
+      ],
     },
     {
       userId: traders[0].id,
       competitionId: springSprint.id,
-      rowIndex: 5,
+      rowIndex: 6,
       symbol: "SBIN",
       segment: "EQUITY",
       tradeType: "LONG",
-      entryPrice1: 824,
-      exitPrice1: null,
-      closingPrice: 836,
-      entryQty1: 90,
-      charges: 52,
-      entryTime1: new Date("2026-04-16T04:20:00.000Z"),
-      exitTime1: null,
       status: "OPEN",
       tags: "swing,open-position",
-      notes: "Holding overnight with manual closing price entered for mark-to-market.",
+      notes: "Holding overnight — PSU bank breakout thesis intact.",
+      charges: 52,
+      closingPrice: 836,
+      transactions: [
+        { type: "BUY", price: 824, quantity: 90, dateTime: new Date("2026-04-20T04:20:00.000Z") },
+      ],
     },
+  ];
+
+  // ── Mira Shah — 5 closed trades (portfolioCapital 300k) ─────────────────
+  // Aggressive options trader, highest return % → leaderboard rank #1
+  const miraTrades: TradeSeed[] = [
     {
       userId: traders[1].id,
       competitionId: springSprint.id,
@@ -217,16 +233,15 @@ async function main() {
       symbol: "SBIN",
       segment: "EQUITY",
       tradeType: "LONG",
-      entryPrice1: 812,
-      exitPrice1: 836,
-      closingPrice: 836,
-      entryQty1: 100,
-      charges: 54,
-      entryTime1: new Date("2026-04-02T04:00:00.000Z"),
-      exitTime1: new Date("2026-04-02T06:05:00.000Z"),
       status: "CLOSED",
       tags: "range-break",
       notes: "Textbook range break from base.",
+      charges: 54,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 812, quantity: 100, dateTime: new Date("2026-04-02T04:00:00.000Z") },
+        { type: "SELL", price: 836, quantity: 100, dateTime: new Date("2026-04-02T06:05:00.000Z") },
+      ],
     },
     {
       userId: traders[1].id,
@@ -235,16 +250,15 @@ async function main() {
       symbol: "ICICIBANK",
       segment: "INTRADAY",
       tradeType: "SHORT",
-      entryPrice1: 1096,
-      exitPrice1: 1110,
-      closingPrice: 1112,
-      entryQty1: 70,
-      charges: 72,
-      entryTime1: new Date("2026-04-07T04:20:00.000Z"),
-      exitTime1: new Date("2026-04-07T07:05:00.000Z"),
       status: "CLOSED",
       tags: "counter-trend",
       notes: "Fade idea failed after sector strength.",
+      charges: 72,
+      closingPrice: null,
+      transactions: [
+        { type: "SELL", price: 1096, quantity: 70, dateTime: new Date("2026-04-07T04:20:00.000Z") },
+        { type: "BUY",  price: 1110, quantity: 70, dateTime: new Date("2026-04-07T07:05:00.000Z") },
+      ],
     },
     {
       userId: traders[1].id,
@@ -253,16 +267,15 @@ async function main() {
       symbol: "NIFTY26APR24100PE",
       segment: "OPTIONS",
       tradeType: "LONG",
-      entryPrice1: 98,
-      exitPrice1: 132,
-      closingPrice: 130,
-      entryQty1: 150,
-      charges: 84,
-      entryTime1: new Date("2026-04-09T05:00:00.000Z"),
-      exitTime1: new Date("2026-04-09T06:55:00.000Z"),
       status: "CLOSED",
       tags: "gap-fill,options-scalp",
       notes: "Momentum expanded faster than expected.",
+      charges: 120,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 85, quantity: 200, dateTime: new Date("2026-04-09T05:00:00.000Z") },
+        { type: "SELL", price: 155, quantity: 200, dateTime: new Date("2026-04-09T06:55:00.000Z") },
+      ],
     },
     {
       userId: traders[1].id,
@@ -271,155 +284,175 @@ async function main() {
       symbol: "LT",
       segment: "EQUITY",
       tradeType: "LONG",
-      entryPrice1: 3570,
-      exitPrice1: 3624,
-      closingPrice: 3618,
-      entryQty1: 12,
-      charges: 44,
-      entryTime1: new Date("2026-04-13T03:50:00.000Z"),
-      exitTime1: new Date("2026-04-13T08:10:00.000Z"),
       status: "CLOSED",
-      tags: "pullback",
-      notes: "Pullback into prior breakout level.",
+      tags: "swing",
+      notes: "Infrastructure sector breakout play.",
+      charges: 44,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 3570, quantity: 12, dateTime: new Date("2026-04-13T03:50:00.000Z") },
+        { type: "SELL", price: 3624, quantity: 12, dateTime: new Date("2026-04-14T04:10:00.000Z") },
+      ],
     },
     {
       userId: traders[1].id,
       competitionId: springSprint.id,
       rowIndex: 5,
-      symbol: "BAJFINANCE",
-      segment: "FUTURES",
-      tradeType: "SHORT",
-      entryPrice1: 7210,
-      exitPrice1: 7166,
-      closingPrice: 7160,
-      entryQty1: 8,
-      charges: 79,
-      entryTime1: new Date("2026-04-15T04:05:00.000Z"),
-      exitTime1: new Date("2026-04-15T06:30:00.000Z"),
+      symbol: "HDFCBANK",
+      segment: "EQUITY",
+      tradeType: "LONG",
       status: "CLOSED",
-      tags: "trend-day,futures",
-      notes: "Held until the final impulse break.",
+      tags: "swing,fii-flow",
+      notes: "FII accumulation in private banks, breakout confirmed.",
+      charges: 48,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 1780, quantity: 25, dateTime: new Date("2026-04-16T04:05:00.000Z") },
+        { type: "SELL", price: 1840, quantity: 25, dateTime: new Date("2026-04-17T06:20:00.000Z") },
+      ],
     },
+  ];
+
+  // ── Kabir Nair — 5 closed trades (portfolioCapital 200k) ────────────────
+  // Mixed results, rank #3
+  const kabirTrades: TradeSeed[] = [
     {
       userId: traders[2].id,
       competitionId: springSprint.id,
       rowIndex: 1,
       symbol: "TATAMOTORS",
-      segment: "INTRADAY",
-      tradeType: "SHORT",
-      entryPrice1: 968,
-      exitPrice1: 943,
-      closingPrice: 945,
-      entryQty1: 90,
-      charges: 63,
-      entryTime1: new Date("2026-04-06T04:12:00.000Z"),
-      exitTime1: new Date("2026-04-06T06:42:00.000Z"),
+      segment: "EQUITY",
+      tradeType: "LONG",
       status: "CLOSED",
-      tags: "opening-drive",
-      notes: "Best trade of the day after weak open reclaim failed.",
+      tags: "momentum",
+      notes: "EV theme momentum play.",
+      charges: 60,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 940, quantity: 50, dateTime: new Date("2026-04-04T03:45:00.000Z") },
+        { type: "BUY",  price: 945, quantity: 25, dateTime: new Date("2026-04-04T04:00:00.000Z") },
+        { type: "SELL", price: 975, quantity: 75, dateTime: new Date("2026-04-05T06:30:00.000Z") },
+      ],
     },
     {
       userId: traders[2].id,
       competitionId: springSprint.id,
       rowIndex: 2,
-      symbol: "NIFTY26APR23950CE",
-      segment: "OPTIONS",
-      tradeType: "LONG",
-      entryPrice1: 88,
-      exitPrice1: 81,
-      closingPrice: 79,
-      entryQty1: 150,
-      charges: 77,
-      entryTime1: new Date("2026-04-11T05:25:00.000Z"),
-      exitTime1: new Date("2026-04-11T06:48:00.000Z"),
+      symbol: "WIPRO",
+      segment: "INTRADAY",
+      tradeType: "SHORT",
       status: "CLOSED",
-      tags: "event-day",
-      notes: "Stopped after IV crush and failed breakout.",
+      tags: "opening-drive",
+      notes: "Weak open short with quick cover.",
+      charges: 48,
+      closingPrice: null,
+      transactions: [
+        { type: "SELL", price: 496, quantity: 60, dateTime: new Date("2026-04-10T03:50:00.000Z") },
+        { type: "BUY",  price: 488, quantity: 60, dateTime: new Date("2026-04-10T06:45:00.000Z") },
+      ],
     },
     {
       userId: traders[2].id,
       competitionId: springSprint.id,
       rowIndex: 3,
-      symbol: "SUNPHARMA",
+      symbol: "APOLLOHOSP",
       segment: "EQUITY",
       tradeType: "LONG",
-      entryPrice1: 1655,
-      exitPrice1: 1714,
-      closingPrice: 1708,
-      entryQty1: 32,
-      charges: 58,
-      entryTime1: new Date("2026-04-14T03:42:00.000Z"),
-      exitTime1: new Date("2026-04-14T08:16:00.000Z"),
       status: "CLOSED",
-      tags: "swing,breakout",
-      notes: "Continuation after multi-day base.",
+      tags: "swing,healthcare",
+      notes: "Healthcare sector strength from budget allocation news.",
+      charges: 62,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 6280, quantity: 8, dateTime: new Date("2026-04-08T03:55:00.000Z") },
+        { type: "SELL", price: 6460, quantity: 8, dateTime: new Date("2026-04-09T05:10:00.000Z") },
+      ],
     },
     {
       userId: traders[2].id,
       competitionId: springSprint.id,
       rowIndex: 4,
       symbol: "MARUTI",
-      segment: "FUTURES",
+      segment: "EQUITY",
       tradeType: "SHORT",
-      entryPrice1: 11840,
-      exitPrice1: 11765,
-      closingPrice: 11770,
-      entryQty1: 6,
-      charges: 74,
-      entryTime1: new Date("2026-04-16T03:35:00.000Z"),
-      exitTime1: new Date("2026-04-16T06:15:00.000Z"),
       status: "CLOSED",
-      tags: "mean-reversion,futures",
-      notes: "Captured reversion from stretched opening move.",
+      tags: "trend-day",
+      notes: "Auto sector weakness on EV headwinds.",
+      charges: 58,
+      closingPrice: null,
+      transactions: [
+        { type: "SELL", price: 12200, quantity: 3, dateTime: new Date("2026-04-11T03:50:00.000Z") },
+        { type: "BUY",  price: 11900, quantity: 3, dateTime: new Date("2026-04-11T07:15:00.000Z") },
+      ],
     },
     {
       userId: traders[2].id,
       competitionId: springSprint.id,
       rowIndex: 5,
-      symbol: "AXISBANK",
+      symbol: "SUNPHARMA",
       segment: "EQUITY",
       tradeType: "LONG",
-      entryPrice1: 1142,
-      exitPrice1: null,
-      closingPrice: 1138,
-      entryQty1: 60,
-      charges: 41,
-      entryTime1: new Date("2026-04-16T05:00:00.000Z"),
-      exitTime1: null,
-      status: "OPEN",
-      tags: "breakout,overnight",
-      notes: "Still open into close; closing price used for journal MTM.",
+      status: "CLOSED",
+      tags: "swing,defensive",
+      notes: "Defensive rotation into pharma on global uncertainty.",
+      charges: 42,
+      closingPrice: null,
+      transactions: [
+        { type: "BUY",  price: 1620, quantity: 40, dateTime: new Date("2026-04-14T04:10:00.000Z") },
+        { type: "SELL", price: 1650, quantity: 40, dateTime: new Date("2026-04-15T06:45:00.000Z") },
+      ],
     },
   ];
 
-  for (const blueprint of tradeBlueprints) {
+  const allBlueprints = [...aaravTrades, ...miraTrades, ...kabirTrades];
+
+  for (const blueprint of allBlueprints) {
+    const { transactions, ...rest } = blueprint;
+
     const metrics = calculateTradeMetrics({
-      entryPrice1: blueprint.entryPrice1,
-      exitPrice1: blueprint.exitPrice1,
-      closingPrice: blueprint.closingPrice,
-      entryQty1: blueprint.entryQty1,
-      charges: blueprint.charges,
       tradeType: blueprint.tradeType,
       status: blueprint.status,
+      transactions: transactions.map((t) => ({ type: t.type, price: t.price, quantity: t.quantity })),
+      charges: blueprint.charges,
     });
+
+    const entryType = blueprint.tradeType === "LONG" ? "BUY" : "SELL";
+    const entryTxns = transactions
+      .filter((t) => t.type === entryType)
+      .sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime());
+    const firstEntryAt = entryTxns.length > 0 ? entryTxns[0].dateTime : new Date();
 
     await prisma.trade.create({
       data: {
-        ...blueprint,
+        ...rest,
         capitalUsed: metrics.capitalUsed,
         netPnl: metrics.realizedPnl,
+        firstEntryAt,
         lockedAt: blueprint.status === "CLOSED" ? new Date() : null,
+        transactions: {
+          create: transactions.map((t, i) => ({
+            type: t.type,
+            price: t.price,
+            quantity: t.quantity,
+            dateTime: t.dateTime,
+            order: i,
+          })),
+        },
       },
     });
   }
+
+  // Summary of expected leaderboard results (approximate):
+  // Mira Shah:  options scalp +13,880 net on options + other trades → ~21% return  → #1
+  // Aarav Mehta: diversified momentum → ~14% return                                 → #2
+  // Kabir Nair:  mixed, smaller wins  → ~9% return                                  → #3
+
+  console.log("✅ Seed complete.");
+  console.log("   Admin:   admin@stockscript.dev / Admin@12345");
+  console.log("   Traders: aarav / mira / kabir @stockscript.dev / Trader@123");
+  console.log("   All 3 traders have 5 qualifying closed trades in April Momentum Sprint.");
 }
 
 main()
-  .then(async () => {
-    await prisma.$disconnect();
-  })
-  .catch(async (error) => {
-    console.error(error);
-    await prisma.$disconnect();
-    process.exit(1);
-  });
+  .catch((e) => { console.error(e); process.exit(1); })
+  .finally(() => prisma.$disconnect());

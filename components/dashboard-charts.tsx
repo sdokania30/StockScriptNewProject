@@ -25,15 +25,15 @@ export function DashboardCharts({ trades, metrics, userCapital, groupedTrades }:
   groupedTrades: any[];
 }) {
   const { equityCurve, last10, monthlyTotals } = useMemo(() => {
-    // Sort trades asc by entryTime
-    const sorted = [...trades].sort((a, b) => new Date(a.entryTime1).getTime() - new Date(b.entryTime1).getTime());
-    
+    // Sort trades asc by firstEntryAt
+    const sorted = [...trades].sort((a, b) => new Date(a.firstEntryAt ?? a.createdAt).getTime() - new Date(b.firstEntryAt ?? b.createdAt).getTime());
+
     let cumulative = 0;
     const equityCurve = sorted.map((t: any) => {
       const pnl = t.status === "CLOSED" ? t.netPnl : t.markedPnl || 0;
       cumulative += pnl;
       return {
-        date: new Date(t.entryTime1).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        date: new Date(t.firstEntryAt ?? t.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
         equity: cumulative,
       };
     });
@@ -47,7 +47,7 @@ export function DashboardCharts({ trades, metrics, userCapital, groupedTrades }:
 
     const monthlyMap = new Map();
     sorted.forEach((t: any) => {
-      const month = new Date(t.entryTime1).toLocaleDateString(undefined, { month: "short", year: "2-digit" });
+      const month = new Date(t.firstEntryAt ?? t.createdAt).toLocaleDateString(undefined, { month: "short", year: "2-digit" });
       if (!monthlyMap.has(month)) {
         monthlyMap.set(month, { month, winners: 0, losers: 0, pnl: 0, capital: 0 });
       }

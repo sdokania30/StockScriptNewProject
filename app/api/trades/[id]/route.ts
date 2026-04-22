@@ -13,12 +13,11 @@ export async function PUT(request: Request, { params }: { params: { id: string }
     const json = await request.json();
     const parsed = tradePayloadSchema.parse(json);
     const payload = normalizeTradePayload(parsed);
-    const metrics = calculateTradeMetrics(payload as any);
+    const metrics = calculateTradeMetrics(payload);
 
     const existingTrade = await prisma.trade.findUnique({
       where: { id: params.id, userId: user.id },
     });
-
     if (!existingTrade) {
       return NextResponse.json({ error: "Trade not found" }, { status: 404 });
     }
@@ -26,45 +25,75 @@ export async function PUT(request: Request, { params }: { params: { id: string }
     if (payload.competitionId) {
       const participant = await prisma.competitionParticipant.findUnique({
         where: {
-          competitionId_userId: {
-            competitionId: payload.competitionId,
-            userId: user.id,
-          },
+          competitionId_userId: { competitionId: payload.competitionId, userId: user.id },
         },
       });
-
       if (!participant) {
         return NextResponse.json(
           { error: "Join the competition before posting a competition trade." },
-          { status: 400 },
+          { status: 400 }
         );
       }
     }
 
-    // Update the trade, allowing the user to change *any* value
-    const trade = await prisma.trade.update({
-      where: { id: existingTrade.id },
-      data: {
-        ...payload,
-        entryTime1: new Date(payload.entryTime1),
-        entryTime2: payload.entryTime2 ? new Date(payload.entryTime2) : null,
-        entryTime3: payload.entryTime3 ? new Date(payload.entryTime3) : null,
-        exitTime1: payload.exitTime1 ? new Date(payload.exitTime1) : null,
-        exitTime2: payload.exitTime2 ? new Date(payload.exitTime2) : null,
-        exitTime3: payload.exitTime3 ? new Date(payload.exitTime3) : null,
-        capitalUsed: metrics.capitalUsed,
-        netPnl: metrics.realizedPnl,
-        lockedAt: payload.status === "CLOSED" ? new Date() : null, // Assuming editing is always allowed now
-      },
+    const txPayload = payload.transactions.map((t, i) => ({
+      type: t.type,
+      price: t.price,
+      quantity: t.quantity,
+      dateTime: new Date(t.dateTime),
+      order: i,
+    }));
+
+    // Auto-detect tradeType from first chronological transaction
+    const sortedByDate = [...txPayload].sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime());
+    const derivedTradeType = sortedByDate[0]?.type === "BUY" ? "LONG" : "SHORT";
+    const entryType = derivedTradeType === "LONG" ? "BUY" : "SELL";
+    const exitType = derivedTradeType === "LONG" ? "SELL" : "BUY";
+
+    const entryTxns = txPayload.filter((t) => t.type === entryType).sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime());
+    const firstEntryAt = entryTxns.length > 0 ? entryTxns[0].dateTime : new Date();
+
+    const totalEntryQ = txPayload.filter((t) => t.type === entryType).reduce((s, t) => s + t.quantity, 0);
+    const totalExitQ = txPayload.filter((t) => t.type === exitType).reduce((s, t) => s + t.quantity, 0);
+    const derivedStatus = totalExitQ >= totalEntryQ ? "CLOSED" : payload.status;
+
+    // Replace all transactions atomically
+    const trade = await prisma.$transaction(async (tx) => {
+      await tx.transaction.deleteMany({ where: { tradeId: existingTrade.id } });
+
+      return tx.trade.update({
+        where: { id: existingTrade.id },
+        data: {
+          competitionId: payload.competitionId ?? null,
+          symbol: payload.symbol,
+          segment: payload.segment,
+          tradeType: derivedTradeType,
+          status: derivedStatus,
+          tags: payload.tags,
+          notes: payload.notes,
+          charges: payload.charges,
+          closingPrice: payload.closingPrice ?? null,
+          stopLoss: payload.stopLoss ?? null,
+          capitalUsed: metrics.capitalUsed,
+          netPnl: metrics.realizedPnl,
+          firstEntryAt,
+          lockedAt: derivedStatus === "CLOSED" ? new Date() : null,
+          transactions: { create: txPayload },
+        },
+        include: {
+          transactions: { orderBy: { dateTime: "asc" } },
+          images: true,
+          competition: true,
+          user: true,
+        },
+      });
     });
 
     return NextResponse.json({ trade });
   } catch (error) {
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Unable to update trade.",
-      },
-      { status: 400 },
+      { error: error instanceof Error ? error.message : "Unable to update trade." },
+      { status: 400 }
     );
   }
 }
@@ -76,22 +105,17 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
     const existingTrade = await prisma.trade.findUnique({
       where: { id: params.id, userId: user.id },
     });
-
     if (!existingTrade) {
       return NextResponse.json({ error: "Trade not found" }, { status: 404 });
     }
 
-    await prisma.trade.delete({
-      where: { id: existingTrade.id },
-    });
+    await prisma.trade.delete({ where: { id: existingTrade.id } });
 
     return NextResponse.json({ deleted: true });
   } catch (error) {
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Unable to delete trade.",
-      },
-      { status: 400 },
+      { error: error instanceof Error ? error.message : "Unable to delete trade." },
+      { status: 400 }
     );
   }
 }

@@ -103,18 +103,25 @@ export const BROKER_PROFILES: Record<string, BrokerProfile> = {
 
 /**
  * Parse a date string according to the specified format.
- * Optionally combine with a separate time string.
+ * Auto-detects ISO (YYYY-MM-DD) regardless of profile format setting.
+ * Optionally combines with a separate time string.
  */
 function parseDate(dateStr: string, format: BrokerProfile["dateFormat"], timeStr?: string): Date {
   const trimmed = dateStr.trim();
+
+  // Auto-detect ISO format: starts with 4-digit year
+  const isISO = /^\d{4}-\d{2}-\d{2}/.test(trimmed);
+  if (isISO) {
+    const timePart = timeStr ? `T${timeStr.trim()}` : "";
+    return new Date(`${trimmed}${timePart}`);
+  }
 
   if (format === "ISO") {
     return new Date(trimmed);
   }
 
   if (format === "DD-MM-YYYY" || format === "DD/MM/YYYY") {
-    const sep = format === "DD-MM-YYYY" ? "-" : "/";
-    const parts = trimmed.split(/[\s-/T]/);
+    const parts = trimmed.split(/[\s\-\/T]/);
     let [dd, mm, yyyy] = parts;
 
     // Auto-detect if mm > 12, swap them (handles Excel locale mangling)
@@ -124,7 +131,6 @@ function parseDate(dateStr: string, format: BrokerProfile["dateFormat"], timeStr
       mm = temp;
     }
 
-    // Use embedded time if present, else use separate time string, else default
     let timePart = "";
     if (parts.length > 3) {
       timePart = ` ${parts.slice(3).join(":")}`;
@@ -135,7 +141,7 @@ function parseDate(dateStr: string, format: BrokerProfile["dateFormat"], timeStr
   }
 
   if (format === "MM/DD/YYYY") {
-    const parts = trimmed.split(/[\s/T]/);
+    const parts = trimmed.split(/[\s\/T]/);
     let [mm, dd, yyyy] = parts;
 
     if (parseInt(mm, 10) > 12 && parseInt(dd, 10) <= 12) {
